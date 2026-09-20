@@ -48,6 +48,16 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 SKIP_DIRS = {".git", "__pycache__", ".venv", ".pytest_cache", ".local"}
 
 
+def _force_utf8_stdio() -> None:
+    """Windows 默认控制台编码（cp1252/GBK）打印中文会崩，统一改 UTF-8。"""
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+_force_utf8_stdio()
+
+
 def scan_text(text: str) -> list[tuple[str, int]]:
     """返回 (违规类别, 行号) 列表。"""
     findings: list[tuple[str, int]] = []
