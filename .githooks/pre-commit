@@ -1,0 +1,3 @@
+#!/bin/sh
+# 本地钩子可被跳过，不是完整安全边界；远程 CI 才是合并检查依据。
+python scripts/repo_checks.py --staged

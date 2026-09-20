@@ -1,0 +1,4 @@
+title = "factory-shift-handover gitleaks config"
+
+[extend]
+useDefault = true
