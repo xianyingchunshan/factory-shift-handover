@@ -3,6 +3,13 @@
 > 状态：**候选冻结**。主控审查合并后才视为冻结；消费者不得把候选当已冻结依赖（issue #6）。
 > 仅依赖 Python 标准库；不联网；不调用任何外部系统。
 
+> T03 **增补**（issue #12，2026-09-21 主控拍板口径）：新增 `successor.py`
+> （接班人前置询问 + 换人变更），**不改**下列五类契约的字段、方法与既有语义。
+> 换人规则：新接班人须解析为唯一可信身份（`AUTH_REQUIRED` 拒绝解析不到/不唯一），
+> `archived` 终态与 `blocked`（告警未清）拒绝变更（`ALARM_NOT_CLEARED`），
+> 变更显式留痕（谁/何时/从谁改到谁）且旧配置快照进 `snapshot_history`。
+> 待办作废状态列属**工作流辅助表**（见 `integrations/aitable/tables.py`），不是契约列。
+
 ## 五类契约
 
 | 契约 | 位置 | 关键不变量 |
@@ -15,7 +22,8 @@
 
 `enums.py` 放九类/重要级/状态等枚举与中文别名；`identity.py` 放身份引用
 （`dingtalk|eam|ehr`）；`timebase.py` 放时间口径（Asia/Shanghai 用固定 +08:00 表示，
-Windows 无需 tzdata）；`aitable_mapping.py` 放钉钉AI表格字段映射（不写死表 ID）。
+Windows 无需 tzdata）；`aitable_mapping.py` 放钉钉AI表格字段映射（不写死表 ID）；
+`successor.py`（T03 增补）放接班人变更：唯一身份解析、态约束、变更留痕账本。
 
 ## 错误码最小集
 

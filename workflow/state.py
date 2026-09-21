@@ -31,21 +31,24 @@ from integrations.aitable.tables import (
     EVENT_TABLE,
     INTAKE_JOURNAL_TABLE,
     SHIFT_TABLE,
+    SUCCESSOR_CHANGE_TABLE,
     TODO_TABLE,
     ShiftTable,
 )
 
 from .checklist import ShiftChecklistService
 from .intake import RestoreIssue, ShiftIntakeService
+from .successor import SuccessorService
 from .todos import TodoAssignmentService
 
-#: 参与恢复的五张表（两张契约表 + 三张工作流辅助表）。
+#: 参与恢复的六张表（两张契约表 + 四张工作流辅助表）。
 RESTORE_TABLES: tuple[str, ...] = (
     SHIFT_TABLE,
     EVENT_TABLE,
     INTAKE_JOURNAL_TABLE,
     ALARM_JOURNAL_TABLE,
     TODO_TABLE,
+    SUCCESSOR_CHANGE_TABLE,
 )
 
 
@@ -57,6 +60,7 @@ class RestartBundle:
     intake: ShiftIntakeService
     todos: TodoAssignmentService
     issues: tuple[RestoreIssue, ...] = ()
+    successor: SuccessorService | None = None
 
     def checklist(self, *, clock: Callable[[], datetime] | None = None) -> ShiftChecklistService:
         """按恢复出的班次/事件/告警账本构造清单服务（告警未清仍会被拦）。"""
@@ -69,14 +73,36 @@ class RestartBundle:
             require_offline=False,
         )
 
+    def successor_service(self, resolver: Any = None) -> SuccessorService:
+        """换人服务（已在 :func:`rebuild` 注入解析器时可直接取用；否则按需构造）。"""
+        if self.successor is not None:
+            return self.successor
+        if resolver is None:
+            raise ContractViolation(
+                "重建换人服务需要注入解析器：rebuild(..., resolver=...) 或 successor_service(resolver=...)"
+            )
+        service = SuccessorService(
+            self.shift,
+            self.intake.adapter,
+            resolver=resolver,
+            todos=self.todos,
+            clock=self.intake.clock,
+            require_offline=False,
+        )
+        service.restore()
+        return service
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "shift_id": self.shift.shift_id,
             "status": self.shift.status,
+            "handover_to": self.shift.handover_to.to_dict(),
             "events": len(self.intake.events),
             "stored_rows": self.intake.event_table.count(self.shift.shift_id),
             "open_alarms": self.intake.ledger.open_count,
             "confirmations": len(self.todos.confirmations),
+            "voided_confirmations": len(self.todos.voided()),
+            "successor_changes": 0 if self.successor is None else len(self.successor.changes_of_shift()),
             "issues": [issue.to_dict() for issue in self.issues],
         }
 
@@ -140,9 +166,15 @@ def rebuild(
     *,
     shift_id: str,
     clock: Callable[[], datetime] | None = None,
+    resolver: Any = None,
     require_offline: bool = True,
 ) -> RestartBundle:
-    """从存储重建工作流状态（模拟重启）：不重写表格、不重放外部写入。"""
+    """从存储重建工作流状态（模拟重启）：不重写表格、不重放外部写入。
+
+    ``resolver``：注入式身份解析器（合成解析器即可）。给定时同时重建换人服务
+    （变更留痕从辅助表读回、作废态从待办表读回），不给则 ``bundle.successor`` 为 ``None``，
+    需要时用 :meth:`RestartBundle.successor_service` 按需构造。
+    """
     if require_offline:
         assert_synthetic(adapter)
     shift = ShiftTable(adapter).get(shift_id)
@@ -152,7 +184,20 @@ def rebuild(
     issues = intake.restore()
     todos = TodoAssignmentService(adapter, shift, clock=clock, require_offline=require_offline)
     todos.restore()
-    return RestartBundle(shift=shift, intake=intake, todos=todos, issues=issues)
+    successor = None
+    if resolver is not None:
+        successor = SuccessorService(
+            shift,
+            adapter,
+            resolver=resolver,
+            todos=todos,
+            clock=clock,
+            require_offline=require_offline,
+        )
+        successor.restore()
+    return RestartBundle(
+        shift=shift, intake=intake, todos=todos, issues=issues, successor=successor
+    )
 
 
 def restart(
@@ -161,6 +206,7 @@ def restart(
     adapter: AitableAdapter | None = None,
     shift_id: str,
     clock: Callable[[], datetime] | None = None,
+    resolver: Any = None,
 ) -> RestartBundle:
     """便利入口：``payload`` 为序列化快照时先导入再重建；否则直接在原适配器上重建。"""
     target = adapter
@@ -170,7 +216,7 @@ def restart(
         target = SyntheticAitableAdapter()
     if payload is not None:
         load_tables(target, payload)
-    return rebuild(target, shift_id=shift_id, clock=clock)
+    return rebuild(target, shift_id=shift_id, clock=clock, resolver=resolver)
 
 
 __all__ = [
