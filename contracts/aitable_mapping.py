@@ -24,6 +24,14 @@ TABLE_ID_NOTE = "表 ID / 视图 ID 由运行时配置提供，不入仓库、�
 
 RAW_STRING_NOTE = "表格列存原始字符串；枚举校验在业务层，校验结果回写 completeness 列"
 
+#: T04 增补：厂级口径下"班次"列取值在 早/中/晚/自定义 之外新增 **驻场期**（``stay_period``）。
+#: 只声明契约取值与列语义；**AI 表格里单选选项的真实更新属 L4，由主控执行**，本仓不写死表 ID/选项 ID。
+SHIFT_NAME_STAY_PERIOD_NOTE = (
+    "班次列取值：早/中/晚/自定义 + 驻场期（stay_period）；"
+    "驻场期一次轮换一张单，start_time/end_time 即驻场期边界（E003 越界边界同此）；"
+    "AI 表格选项更新属 L4，由主控执行"
+)
+
 ENUM_COLUMNS: tuple[str, ...] = ("shift_name", "status", "category", "severity", "completeness")
 
 
@@ -130,6 +138,7 @@ def mapping_doc() -> dict[str, Any]:
         "event_table": EVENT_TABLE,
         "table_id_note": TABLE_ID_NOTE,
         "raw_string_note": RAW_STRING_NOTE,
+        "shift_name_options_note": SHIFT_NAME_STAY_PERIOD_NOTE,
         "shift_columns": [mapping.to_dict() for mapping in SHIFT_FIELD_MAPPINGS],
         "event_columns": [mapping.to_dict() for mapping in EVENT_FIELD_MAPPINGS],
         "shift_internal_fields": list(SHIFT_INTERNAL_FIELDS),
@@ -146,6 +155,7 @@ __all__ = [
     "RAW_STRING_NOTE",
     "SHIFT_FIELD_MAPPINGS",
     "SHIFT_INTERNAL_FIELDS",
+    "SHIFT_NAME_STAY_PERIOD_NOTE",
     "SHIFT_TABLE",
     "TABLE_ID_NOTE",
     "column_table",

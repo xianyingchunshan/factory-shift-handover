@@ -15,6 +15,11 @@
 额外自检（本层）：出清单前先做**源一致性**（内存事件集合 vs 交接事件表），
 出清单后再做**清单一致性**（时间序 / 置顶 / 未完移交 / 汇总数 vs 表格行数），
 任一不符即拒绝出清单——清单与事件记录必须严格一致。
+
+T04 增补（SPEC §0 厂级口径）：一次轮换一张单，清单标题与汇总口径跟随班次名——
+驻场期单即「交接班清单 · 驻场期」（:func:`checklist_title` /
+:func:`stay_period_facts`，服务上对应 ``title`` / ``period_facts`` /
+``render_document``）。契约层 ``render_lines`` 保持冻结，口径与它同源（都取班次名标签）。
 """
 
 from __future__ import annotations
@@ -24,11 +29,16 @@ from datetime import datetime
 from typing import Any, Callable, Mapping
 
 from contracts.alarms import AlarmLedger
+from contracts.enums import ShiftName, label_of
 from contracts.errors import ALARM_NOT_CLEARED, ContractError, ContractViolation
 from contracts.events import EventStore, HandoverEvent
 from contracts.report import HandoverReport, build_report
 from contracts.shift import ShiftRecord
-from contracts.timebase import format_minute, now_shanghai
+from contracts.timebase import (
+    calendar_days_in_window,
+    format_minute,
+    now_shanghai,
+)
 
 from integrations.aitable.adapter import AitableAdapter
 from integrations.aitable.cells import EVENT_COLUMNS, SHIFT_COLUMNS
@@ -53,6 +63,42 @@ class ConsistencyReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {"ok": self.ok, "problems": list(self.problems), "checked": dict(self.checked)}
+
+
+#: 清单标题基名（标题口径：``交接班清单 · <班次名标签>``）。
+CHECKLIST_TITLE_BASE = "交接班清单"
+
+
+def checklist_title(shift: ShiftRecord) -> str:
+    """清单标题口径：随班次名走——驻场期单即「交接班清单 · 驻场期」。
+
+    T04 增补（SPEC §0 厂级口径：一次轮换一张单）：标题必须体现"这一单覆盖整个驻场期"。
+    与契约层 :meth:`contracts.report.HandoverReport.render_lines` **同源**
+    （都取 ``label_of(ShiftName, ...)``），不另立一套命名。
+    """
+    return f"{CHECKLIST_TITLE_BASE} · {label_of(ShiftName, shift.shift_name)}"
+
+
+def stay_period_facts(shift: ShiftRecord) -> dict[str, Any]:
+    """汇总口径：标题 + 驻场期边界 + 覆盖日历日（长周期/跨零点一并给足）。
+
+    ``calendar_days`` 为期内**相连**日历日数：30 天驻场期跨月 → 31 个相连日历日
+    （首日与末日各算一天），与 E003「整体区间、不按单日切分」的口径一致。
+    """
+    days = calendar_days_in_window(shift.start_time, shift.end_time)
+    return {
+        "title": checklist_title(shift),
+        "shift_id": shift.shift_id,
+        "shift_name": shift.shift_name,
+        "shift_name_label": label_of(ShiftName, shift.shift_name),
+        "is_stay_period": shift.is_stay_period,
+        "window_start": format_minute(shift.start_time),
+        "window_end": format_minute(shift.end_time),
+        "first_day": "" if not days else days[0].isoformat(),
+        "last_day": "" if not days else days[-1].isoformat(),
+        "calendar_days": len(days),
+        "crosses_midnight": shift.start_time.date() != shift.end_time.date(),
+    }
 
 
 class ShiftChecklistService:
@@ -192,6 +238,19 @@ class ShiftChecklistService:
 
     # ---- 渲染 -----------------------------------------------------------
 
+    @property
+    def title(self) -> str:
+        """本单清单标题（口径跟随班次名：驻场期 → 「交接班清单 · 驻场期」）。"""
+        return checklist_title(self.shift)
+
+    def period_facts(self) -> dict[str, Any]:
+        """本单驻场期汇总口径（标题 / 边界 / 覆盖日历日 / 是否跨零点）。"""
+        return stay_period_facts(self.shift)
+
+    def render_document(self, report: HandoverReport) -> list[str]:
+        """带标题口径的完整清单：标题行 + 契约五段（五段渲染保持冻结不改）。"""
+        return [self.title, *self.render(report)]
+
     def render(self, report: HandoverReport) -> list[str]:
         """渲染成人能看懂的文本清单（契约 :meth:`HandoverReport.render_lines`）。"""
         return report.render_lines()
@@ -240,8 +299,11 @@ def require_clear_or_block(shift: ShiftRecord, ledger: AlarmLedger) -> None:
 
 
 __all__ = [
+    "CHECKLIST_TITLE_BASE",
     "ConsistencyReport",
     "ShiftChecklistService",
+    "checklist_title",
     "require_clear_or_block",
+    "stay_period_facts",
     "sync_shift_status",
 ]

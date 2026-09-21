@@ -81,12 +81,20 @@ EVENT_STATUS_LABELS: dict[EventStatus, str] = {
 
 
 class ShiftName(StrEnum):
-    """班次名。"""
+    """班次名。既为"班次"这一冻结技术名，厂级场景承载的是**一次轮换 = 一个驻场期**。
+
+    T04 **增补**（SPEC §0 项目定位：一次轮换交接一次，一张单覆盖整个驻场期）：
+    在既有 ``早/中/晚/自定义`` **之后追加** ``STAY_PERIOD``（``"stay_period"`` /
+    中文 ``"驻场期"``）。既有四个取值的规范值与顺序保持不变，历史行照旧可读；
+    厂级交接取 ``STAY_PERIOD``，其 ``start_time``/``end_time`` 即**驻场期边界**。
+    """
 
     EARLY = "early"
     MIDDLE = "middle"
     LATE = "late"
     CUSTOM = "custom"
+    #: T04 增补：驻场期（交接周期=轮换；边界语义见 :mod:`contracts.timebase`）。
+    STAY_PERIOD = "stay_period"
 
 
 SHIFT_NAME_LABELS: dict[ShiftName, str] = {
@@ -94,7 +102,14 @@ SHIFT_NAME_LABELS: dict[ShiftName, str] = {
     ShiftName.MIDDLE: "中",
     ShiftName.LATE: "晚",
     ShiftName.CUSTOM: "自定义",
+    #: T04 增补：清单标题/渲染口径随之变成「交接班清单 · 驻场期」。
+    ShiftName.STAY_PERIOD: "驻场期",
 }
+
+#: T04 增补：驻场期可接受的两种写法（规范值 + 中文标签），供容忍式判定使用。
+STAY_PERIOD_ALIASES: frozenset[str] = frozenset(
+    {ShiftName.STAY_PERIOD.value, SHIFT_NAME_LABELS[ShiftName.STAY_PERIOD]}
+)
 
 
 class ShiftStatus(StrEnum):
@@ -230,6 +245,17 @@ def is_blank(value: Any) -> bool:
     return False
 
 
+def is_stay_period(value: Any) -> bool:
+    """是否"驻场期"口径（T04 厂级口径：一次轮换一张单，覆盖整个驻场期）。
+
+    容忍未知/空取值：不认识一律 ``False``（不抛），便于读取历史行。
+    需要严格校验时仍走 :func:`coerce_enum`。
+    """
+    if isinstance(value, ShiftName):
+        return value == ShiftName.STAY_PERIOD
+    return str(value).strip() in STAY_PERIOD_ALIASES
+
+
 def label_table(enum_cls: type) -> dict[Any, str]:
     """该枚举的中文标签表。"""
     return dict(_LABEL_TABLES[enum_cls])
@@ -299,6 +325,7 @@ __all__ = [
     "SEVERITY_LABELS",
     "SHIFT_NAME_LABELS",
     "SHIFT_STATUS_LABELS",
+    "STAY_PERIOD_ALIASES",
     "Severity",
     "ShiftName",
     "ShiftStatus",
@@ -307,6 +334,7 @@ __all__ = [
     "alias_index",
     "coerce_enum",
     "is_blank",
+    "is_stay_period",
     "label_of",
     "label_table",
     "optional_enum",

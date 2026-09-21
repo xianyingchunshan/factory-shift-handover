@@ -14,6 +14,11 @@ E004     关键字段缺失（类别/重要级/状态） 告警
 不变量：提交前全表复验存在未清除告警 → ``shift.status = blocked``，
 **禁止生成清单**（:meth:`AlarmLedger.require_clear` → :data:`ALARM_NOT_CLEARED`）。
 告警带 ``created_at`` / ``cleared_at``，可做"是否已清除"断言。
+
+E003 边界口径（T04 增补，SPEC §0 厂级定位）：**班次区间即驻场期边界**——一次轮换
+一张单、覆盖整个驻场期；判定对 ``[start, end]`` 整体区间做，跨零点相连日历日
+**均属期内**，不按单日切分（见 :data:`E003_SCOPE_NOTE` 与
+:func:`contracts.timebase.is_out_of_window`）。告警文案与既有取值不变。
 """
 
 from __future__ import annotations
@@ -39,6 +44,13 @@ ALARM_RULE_LABELS: dict[str, str] = {
     "E003": "时间越出班次区间",
     "E004": "关键字段缺失（类别/重要级/状态）",
 }
+
+#: T04 增补：E003 判定边界说明（厂级口径下"班次区间"= 驻场期边界）。
+#: 只声明口径，不改 ``E003`` 的规则码、触发条件与告警文案。
+E003_SCOPE_NOTE = (
+    "E003 越界判定边界 = 班次区间（厂级口径：驻场期边界）；"
+    "对 [start, end] 整体区间判定，跨零点相连日历日均属期内，不按单日切分"
+)
 
 
 def alarm_id_for(rule: str, shift_id: str, event_id: str | None, field_name: str) -> str:
@@ -228,6 +240,7 @@ class AlarmLedger:
 
 __all__ = [
     "ALARM_RULE_LABELS",
+    "E003_SCOPE_NOTE",
     "AlarmLedger",
     "CompletenessAlarm",
     "alarm_id_for",

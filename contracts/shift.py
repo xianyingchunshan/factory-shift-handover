@@ -6,6 +6,11 @@
   清告警后回到进入 blocked 前的状态（issue #6 §1，§3 不变量）。
 - 配置快照：班次建立时锁定交接线/人员/关键事项标准；变更须显式确认，
   不静默改历史记录（历史快照保留在 ``snapshot_history``）。
+
+厂级口径（T04 增补，SPEC §0）：一次轮换一张单，``shift_name=stay_period``（驻场期）
+即为该口径的取值；此时 ``start_time`` / ``end_time`` = **驻场期边界**（可长达数十天），
+E003 越界判定边界 = 驻场期（**对 ``[start, end]`` 整体区间判定，跨零点相连日历日均属期内**，
+不按单日切分，见 :func:`contracts.timebase.is_out_of_window`）。冻结字段与既有语义不变。
 """
 
 from __future__ import annotations
@@ -29,7 +34,14 @@ from .errors import (
     ContractViolation,
 )
 from .identity import IdentityRef, as_identity
-from .timebase import SHANGHAI, ensure_aware, format_minute, truncate_to_minute
+from .timebase import (
+    SHANGHAI,
+    calendar_days_in_window,
+    covers_calendar_day,
+    ensure_aware,
+    format_minute,
+    truncate_to_minute,
+)
 
 #: 允许的状态迁移（blocked 的进入/退出由告警清态决定，见 transition）。
 ALLOWED_TRANSITIONS: Mapping[str, tuple[str, ...]] = {
@@ -143,11 +155,30 @@ class ShiftRecord:
         return self.status == ShiftStatus.BLOCKED
 
     def contains(self, moment: datetime) -> bool:
-        """时间是否落在本班次闭区间内（E003 越界校验依据）。"""
+        """时间是否落在本班次闭区间内（E003 越界校验依据）。
+
+        厂级口径（T04）：区间即**驻场期边界**，对 ``[start_time, end_time]``
+        **整体区间**判定——跨零点相连日历日均属期内，不按单日切分。
+        """
         return self.start_time <= moment <= self.end_time
 
     def window(self) -> tuple[datetime, datetime]:
         return (self.start_time, self.end_time)
+
+    # ---- 驻场期口径（T04 增补，既有语义不变） ---------------------------
+
+    @property
+    def is_stay_period(self) -> bool:
+        """是否"驻场期"口径（``shift_name=stay_period``：一次轮换一张单）。"""
+        return self.shift_name == ShiftName.STAY_PERIOD.value
+
+    def calendar_days(self) -> tuple[date, ...]:
+        """期内全部相连日历日（驻场期跨零点时相连日均属期内）。"""
+        return calendar_days_in_window(self.start_time, self.end_time)
+
+    def covers_day(self, day: date) -> bool:
+        """该日历日是否属期内（按 ``[start_time, end_time]`` 整体区间判定）。"""
+        return covers_calendar_day(day, self.start_time, self.end_time)
 
     # ---- 状态机 ---------------------------------------------------------
 
