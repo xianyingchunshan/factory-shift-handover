@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "shift": {
+    "shift_id": "SYNTH-SHIFT-STAY-0002",
+    "handover_line": "SYNTH-LINE-B",
+    "start_time": "2026-03-02 08:00",
+    "end_time": "2026-04-01 08:00",
+    "handover_from": {
+      "source": "dingtalk",
+      "user_id": "SYNTH-uid-from",
+      "display_name": "SYNTH-交班人A"
+    },
+    "handover_to": {
+      "source": "ehr",
+      "user_id": "SYNTH-uid-to",
+      "display_name": "SYNTH-接班人B"
+    }
+  },
+  "now": "2026-04-01 09:00",
+  "events": [
+    {
+      "event_id": "SYNTH-STAY-EVT-1001",
+      "category": "runtime",
+      "description": "SYNTH 合规行：驻场期内的运行工况记录",
+      "occurred_at": "2026-03-20 09:30",
+      "severity": "normal",
+      "status": "done",
+      "ref_no": "SYNTH-REF-101",
+      "note": "本条无告警"
+    },
+    {
+      "event_id": "SYNTH-STAY-EVT-1002",
+      "category": "hazard",
+      "description": "SYNTH 隐患完成情况：只有日期没有时:分，需补全",
+      "occurred_at": "2026-03-20",
+      "severity": "normal",
+      "status": "in_progress",
+      "ref_no": "SYNTH-REF-102",
+      "note": "E002 时间不完整：落表 + 告警"
+    },
+    {
+      "event_id": "SYNTH-STAY-EVT-1003",
+      "category": "two_ticket",
+      "description": "SYNTH 两票执行：时间落在驻场期起点前 1 分钟，需复核",
+      "occurred_at": "2026-03-02 07:59",
+      "severity": "normal",
+      "status": "done",
+      "ref_no": "SYNTH-REF-103",
+      "note": "E003 越界（整体区间端点外 1 分钟）"
+    },
+    {
+      "event_id": "SYNTH-STAY-EVT-1004",
+      "category": "field_work",
+      "description": "SYNTH 作业与外委：重要级缺失，需补关键字段",
+      "occurred_at": "2026-03-21 09:00",
+      "severity": "",
+      "status": "done",
+      "ref_no": "SYNTH-REF-104",
+      "note": "E004 关键字段缺失：落表 + 告警"
+    },
+    {
+      "event_id": "SYNTH-STAY-EVT-1005",
+      "category": "other",
+      "description": "SYNTH 其他：发生时间缺失，按 E001 拒收且不落表",
+      "occurred_at": null,
+      "severity": "normal",
+      "status": "done",
+      "ref_no": "SYNTH-REF-105",
+      "note": "E001 拒收（不落表），由输入留痕表留痕"
+    }
+  ]
+}

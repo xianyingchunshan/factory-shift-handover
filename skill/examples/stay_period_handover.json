@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "shift": {
+    "shift_id": "SYNTH-SHIFT-STAY-0001",
+    "handover_line": "SYNTH-LINE-A",
+    "shift_name": "stay_period",
+    "start_time": "2026-03-02 08:00",
+    "end_time": "2026-04-01 08:00",
+    "handover_from": {
+      "source": "dingtalk",
+      "user_id": "SYNTH-uid-from",
+      "display_name": "SYNTH-交班人A"
+    },
+    "handover_to": {
+      "source": "eam",
+      "user_id": "SYNTH-uid-to",
+      "display_name": "SYNTH-接班人B"
+    },
+    "critical_standard": ["重大事项", "移交接班人"]
+  },
+  "now": "2026-04-01 09:00",
+  "events": [
+    {
+      "event_id": "SYNTH-STAY-EVT-0001",
+      "category": "runtime",
+      "description": "SYNTH 运行工况：驻场期首日并网运行正常",
+      "occurred_at": "2026-03-02 08:10",
+      "severity": "normal",
+      "status": "done",
+      "ref_no": "SYNTH-REF-001",
+      "note": "合成示例数据"
+    },
+    {
+      "event_id": "SYNTH-STAY-EVT-0002",
+      "category": "defect",
+      "description": "SYNTH 缺陷完成情况：箱变红外测温超标已登记待消缺",
+      "occurred_at": "2026-03-02 23:59",
+      "severity": "normal",
+      "status": "in_progress",
+      "ref_no": "SYNTH-REF-002",
+      "note": "跨零点相连日仍属驻场期内（E003 按整体区间判定）"
+    },
+    {
+      "event_id": "SYNTH-STAY-EVT-0003",
+      "category": "equipment",
+      "description": "SYNTH 设备情况：集电线路巡视完成",
+      "occurred_at": "2026-03-15 10:00",
+      "severity": "normal",
+      "status": "done",
+      "ref_no": "SYNTH-REF-003",
+      "note": ""
+    },
+    {
+      "event_id": "SYNTH-STAY-EVT-0004",
+      "category": "重大事项",
+      "description": "SYNTH 重大事项：机组跳闸演练，遗留操作待接班人跟进",
+      "occurred_at": "2026-03-20 14:20",
+      "severity": "normal",
+      "status": "移交接班人",
+      "ref_no": "SYNTH-REF-004",
+      "note": "第 5 类默认关键级；状态移交自动升级关键级"
+    },
+    {
+      "event_id": "SYNTH-STAY-EVT-0005",
+      "category": "directive",
+      "description": "SYNTH 上级指令与通知：驻场期结束前的临时要求已传达",
+      "occurred_at": "2026-04-01 08:00",
+      "severity": "normal",
+      "status": "done",
+      "ref_no": "SYNTH-REF-005",
+      "note": "驻场期结束端点，不属越界"
+    }
+  ]
+}
