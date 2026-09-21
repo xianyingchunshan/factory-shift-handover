@@ -26,8 +26,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Repository file checks
         run: python scripts/repo_checks.py
-      - name: Unit tests
+      - name: Unit tests (repo guard)
         run: python -m unittest discover -s tests -p "test_*.py" -v
+      # unittest discover 不递归无 __init__.py 的子目录：必须逐目录显式运行
+      # （本仓已知陷阱；tests/test_repo_structure.py 有守卫测试防回归）
+      - name: Unit tests (contracts)
+        run: python -B -m unittest discover -s tests/contracts -p "test_*.py" -v
+      - name: Unit tests (workflow)
+        run: python -B -m unittest discover -s tests/workflow -p "test_*.py" -v
+      - name: Unit tests (integrations)
+        run: python -B -m unittest discover -s tests/integrations -p "test_*.py" -v
 
   gitleaks:
     name: gitleaks
