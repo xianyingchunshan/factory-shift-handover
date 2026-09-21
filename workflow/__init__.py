@@ -13,12 +13,15 @@
 from __future__ import annotations
 
 from .checklist import ConsistencyReport, ShiftChecklistService
+from .eam_pull import EamPullReport, EamPullService
 from .intake import IntakeOutcome, ShiftIntakeService
 from .state import RestartBundle, dump_tables, dumps, load_tables, loads, rebuild
 from .todos import TodoAssignmentService
 
 __all__ = [
     "ConsistencyReport",
+    "EamPullReport",
+    "EamPullService",
     "IntakeOutcome",
     "RestartBundle",
     "ShiftChecklistService",
