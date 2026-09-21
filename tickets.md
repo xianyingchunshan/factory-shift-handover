@@ -79,3 +79,28 @@
 - [ ] 端到端可跑且可复现
 - [ ] SKILL.md 契约说明齐全
 - [ ] 明确不含机器人监听/触发（范围外）
+
+## T07 判重键语义：驻场期单的重复建单防线
+
+**执行位置：隔离开发，可外派。依赖：T04（已合并）。**
+
+目标：修补主控审查 T04 时实测到的判重缺口——驻场期单（`shift_name=stay_period`）一单跨数十天，
+判重键 `(handover_line, shift_date, shift_name)` 里的 `shift_date` 只被要求"落在区间内"，
+30 天驻场期有 30 个合法取值，同一交接线同一驻场期用不同 `shift_date` 建两次单都能成功，
+与 SPEC §5 冲突。补两道防线（**都只对驻场期生效**）：
+
+- **G1 契约校验**：驻场期单 `shift_date` 必须 == `start_time.date()`（以起始日为业务日期），
+  违反 → `ContractViolation`。
+- **G2 区间重叠拒绝**：同交接线、同班次名的驻场期窗口有交集且非同一 `shift_id` → 拒绝，
+  **复用 `DUPLICATE_SHIFT`（不新增错误码）**；**端点相接不算重叠**（四组边界：重叠/包含/相接/不相交）。
+- **两层都要挡**：`ShiftRegistry.register`（内存键层）与 `ShiftTable.find` / `create_shift`（表层）。
+- **零回归**：既有四类班次（早/中/晚/自定义）判重键与校验逐字节不变（钉死测试）。
+
+允许改：contracts/（增补，仅对 stay_period 生效）、tests/contracts/、workflow/、tests/workflow/、
+integrations/aitable/（仅 find 匹配口径）、tests/integrations/、SPEC.md、tickets.md。
+禁止改：CI、scripts/ 检查口径、docs/、本机配置。
+验收 L1/L2：修前复现与修后拦截两面证据；G1 违规案例；四组边界用例（相接放行）；
+既有四类班次零回归钉死；全量回归非零且全绿；不接真实系统，全部合成夹具。
+- [ ] 修前缺口可复现、修后两层都能拦
+- [ ] 四组边界有用例，相接放行
+- [ ] 既有四类班次判重键逐字节不变

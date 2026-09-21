@@ -10,6 +10,11 @@
 - 告警账本与"未清不出清单"闸门走 :class:`contracts.alarms.AlarmLedger`
   （``require_clear`` → ``ALARM_NOT_CLEARED``）。
 - 同班同线防重走 :class:`contracts.shift.ShiftRegistry`（``DUPLICATE_SHIFT``）。
+  T07：驻场期单（``stay_period``）一单跨数十天，键之外再按**窗口重叠**挡一次——
+  **内存键层**（:meth:`contracts.shift.ShiftRegistry.register`）与**表层**
+  （:meth:`~integrations.aitable.tables.ShiftTable.find` 的 ``incoming`` 口径 /
+  :meth:`ShiftIntakeService.create_shift`）**两层都要挡**；只改一层会出现
+  "内存拦了、表没拦"或反之。
 
 本层额外承担三件事（契约不管的落地部分）：
 
@@ -30,14 +35,19 @@ from contracts.alarms import AlarmLedger, CompletenessAlarm
 from contracts.enums import Severity, WritebackStatus, optional_enum
 from contracts.errors import (
     ALARM_NOT_CLEARED,
-    DUPLICATE_SHIFT,
     E001,
     WRITE_UNKNOWN,
     ContractError,
     ContractViolation,
 )
 from contracts.events import EventStore, HandoverEvent, IntakeResult
-from contracts.shift import RegisterResult, ShiftRecord, ShiftRegistry, ShiftStatus
+from contracts.shift import (
+    RegisterResult,
+    ShiftRecord,
+    ShiftRegistry,
+    ShiftStatus,
+    duplicate_shift_error,
+)
 from contracts.timebase import format_minute, now_shanghai, parse_occurred_at, truncate_to_minute
 
 from integrations.aitable.adapter import AitableAdapter, AitableRejected, AitableWriteUnknown
@@ -182,27 +192,31 @@ class ShiftIntakeService:
     # ---- 建班次（防重） -------------------------------------------------
 
     def create_shift(self) -> RegisterResult:
-        """落班次表并登记幂等键；同班同线重复提交 → ``DUPLICATE_SHIFT``，不建第二单。"""
+        """落班次表并登记幂等键；同班同线重复提交 → ``DUPLICATE_SHIFT``，不建第二单。
+
+        T07：驻场期单另按**窗口重叠**匹配（表层 = ``ShiftTable.find(incoming=...)``，
+        内存键层 = :meth:`contracts.shift.ShiftRegistry.register`）——同交接线同驻场期
+        窗口有交集（端点相接不算）即拒绝，两层都要挡。
+        """
         known_id = self.shift_table.get(self.shift.shift_id)
         if known_id is not None and known_id.idempotency_key != self.shift.idempotency_key:
             raise ContractViolation(
                 f"shift_id {self.shift.shift_id!r} 已绑定另一班次，不得复用"
             )
+        # T07：驻场期单把窗口一并交给表层匹配口径（重叠即同一驻场期，见 ShiftTable.find）。
         known = self.shift_table.find(
-            self.shift.handover_line, self.shift.shift_date, self.shift.shift_name
+            self.shift.handover_line,
+            self.shift.shift_date,
+            self.shift.shift_name,
+            incoming=self.shift,
         )
         if known is not None:
             if known.shift_id != self.shift.shift_id:
-                raise ContractError(
-                    DUPLICATE_SHIFT,
-                    f"同班同线已有班次 {known.shift_id}，不为 {self.shift.shift_id} 建第二单",
-                    detail={
-                        "handover_line": self.shift.handover_line,
-                        "shift_date": self.shift.shift_date.isoformat(),
-                        "existing_shift_id": known.shift_id,
-                        "incoming_shift_id": self.shift.shift_id,
-                    },
+                overlap_hit = (
+                    self.shift.is_stay_period
+                    and known.idempotency_key != self.shift.idempotency_key
                 )
+                raise duplicate_shift_error(known, self.shift, stay_period=overlap_hit)
             return RegisterResult(
                 shift_id=known.shift_id,
                 created=False,

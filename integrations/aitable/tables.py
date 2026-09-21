@@ -25,11 +25,11 @@ from typing import Any, Iterable, Mapping
 
 from contracts.aitable_mapping import EVENT_TABLE, SHIFT_TABLE
 from contracts.confirmation import ConfirmationScope
-from contracts.enums import ShiftName, ShiftStatus, coerce_enum, is_blank
+from contracts.enums import ShiftName, ShiftStatus, coerce_enum, is_blank, is_stay_period
 from contracts.errors import ContractViolation
 from contracts.events import HandoverEvent
 from contracts.identity import IdentityRef
-from contracts.shift import ShiftRecord
+from contracts.shift import ShiftRecord, stay_period_conflict
 from contracts.successor import SuccessorChange
 from contracts.timebase import format_minute
 
@@ -214,19 +214,42 @@ class ShiftTable:
         return None if row is None else shift_from_fields(row.fields)
 
     def find(
-        self, handover_line: str, shift_date: Any, shift_name: str
+        self,
+        handover_line: str,
+        shift_date: Any,
+        shift_name: str,
+        *,
+        incoming: ShiftRecord | None = None,
     ) -> ShiftRecord | None:
-        """按幂等键（交接线 + 日期 + 班次）查已有班次；用于同班同线防重。"""
+        """按幂等键（交接线 + 日期 + 班次）查已有班次；用于同班同线防重。
+
+        T07 匹配口径（**只对驻场期生效**）：``incoming`` 是驻场期单时，除幂等键外
+        再按**驻场期窗口重叠**匹配——同交接线、同班次名、窗口有交集且非同一
+        ``shift_id``（端点相接不算重叠，见 :func:`contracts.shift.stay_period_conflict`）。
+        既有四类班次（早/中/晚/自定义）与未传 ``incoming`` 的调用口径不变。
+        """
         date_text = shift_date.isoformat() if hasattr(shift_date, "isoformat") else str(shift_date)
         name_value = coerce_enum(ShiftName, shift_name, field="班次").value
-        for row in self.adapter.list_records(SHIFT_TABLE):
+        rows = self.adapter.list_records(SHIFT_TABLE)
+        for row in rows:
             if (
                 row.get(SHIFT_COLUMNS["handover_line"]) == str(handover_line).strip()
                 and row.get(SHIFT_COLUMNS["shift_date"]) == date_text
                 and row.get(SHIFT_COLUMNS["shift_name"]) == name_value
             ):
                 return shift_from_fields(row.fields)
-        return None
+        if incoming is None or not incoming.is_stay_period:
+            return None
+        # 只解析"同交接线的驻场期行"（按原始列先筛，既有四类班次的行永不进入本路径）；
+        # 行解析失败按数据脏处理：抛出而不静默跳过（fail-closed，不放行重复建单）。
+        line_text = str(handover_line).strip()
+        candidates = [
+            shift_from_fields(row.fields)
+            for row in rows
+            if row.get(SHIFT_COLUMNS["handover_line"]) == line_text
+            and is_stay_period(row.get(SHIFT_COLUMNS["shift_name"]))
+        ]
+        return stay_period_conflict(incoming, candidates)
 
     def set_status(self, shift_id: str, status: str) -> str:
         """更新班次状态列（原始字符串）。"""
