@@ -30,6 +30,8 @@ from contracts.errors import ContractViolation
 from contracts.events import HandoverEvent
 from contracts.identity import IdentityRef
 from contracts.shift import ShiftRecord
+from contracts.successor import SuccessorChange
+from contracts.timebase import format_minute
 
 from .adapter import AitableAdapter, TableRow
 from .cells import (
@@ -42,6 +44,8 @@ from .cells import (
     event_to_fields,
     identity_from_cell,
     identity_to_cell,
+    json_from_cell,
+    json_to_cell,
     shift_from_fields,
     shift_to_fields,
 )
@@ -50,6 +54,7 @@ from .cells import (
 INTAKE_JOURNAL_TABLE = "输入留痕表（工作流辅助）"
 ALARM_JOURNAL_TABLE = "告警处置留痕表（工作流辅助）"
 TODO_TABLE = "待办表（工作流辅助）"
+SUCCESSOR_CHANGE_TABLE = "接班人变更留痕表（工作流辅助）"
 
 JOURNAL_COLUMNS: Mapping[str, str] = {
     "event_id": "事件ID",
@@ -85,6 +90,31 @@ TODO_COLUMNS: Mapping[str, str] = {
     "writeback_status": "回写状态",
     "writeback_at": "回写时间",
     "notes": "备注",
+    "todo_state": "待办状态",
+    "voided_at": "作废时间",
+    "void_reason": "作废原因",
+}
+
+#: 待办状态（工作流辅助列，非契约列）：换人后旧待办**显式作废**，不静默删除也不静默保留。
+TODO_STATE_ACTIVE = "active"
+TODO_STATE_VOIDED = "voided"
+TODO_STATES: tuple[str, ...] = (TODO_STATE_ACTIVE, TODO_STATE_VOIDED)
+
+#: 接班人变更留痕表的列（工作流辅助表；契约 :class:`contracts.successor.SuccessorChange`）。
+SUCCESSOR_CHANGE_COLUMNS: Mapping[str, str] = {
+    "change_id": "变更ID",
+    "shift_id": "班次ID",
+    "ordinal": "序号",
+    "from_identity": "原接班人",
+    "to_identity": "新接班人",
+    "changed_by": "变更人",
+    "changed_at": "变更时间",
+    "request_text": "答复原文",
+    "resolver": "解析器",
+    "reason": "说明",
+    "voided_todo_ids": "作废待办",
+    "issued_todo_ids": "重发待办",
+    "payload": "留痕JSON",
 }
 
 ALARM_JOURNAL_COLUMNS: Mapping[str, str] = {
@@ -396,6 +426,9 @@ class TodoTable:
             TODO_COLUMNS["writeback_status"]: "not_sent",
             TODO_COLUMNS["writeback_at"]: "",
             TODO_COLUMNS["notes"]: "[]",
+            TODO_COLUMNS["todo_state"]: TODO_STATE_ACTIVE,
+            TODO_COLUMNS["voided_at"]: "",
+            TODO_COLUMNS["void_reason"]: "",
         }
         record_id = self.adapter.create_record(TODO_TABLE, fields)
         self.adapter.update_record(TODO_TABLE, record_id, {TODO_COLUMNS["todo_id"]: record_id})
@@ -436,8 +469,133 @@ class TodoTable:
             return False
         return bool(str(fields.get(TODO_COLUMNS["todo_id"]) or "").strip())
 
+    # ---- 作废（换人路由跟随的显式动作） ---------------------------------
+
+    def state_of(self, unit_id: str) -> str:
+        """待办状态；未写该列的历史行按 ``active`` 处理。"""
+        fields = self.get_fields(unit_id)
+        if fields is None:
+            return ""
+        value = str(fields.get(TODO_COLUMNS["todo_state"]) or "").strip()
+        return value or TODO_STATE_ACTIVE
+
+    def void(self, unit_id: str, *, reason: str, at: str = "") -> dict[str, str]:
+        """**显式作废**一条待办：写 ``待办状态=voided`` + 作废时间/原因，行不删除。
+
+        旧待办不得静默残留：作废后仍可回读"作废过哪一条、为什么、什么时候"。
+        """
+        row = self.find_row(unit_id)
+        if row is None:
+            raise ContractViolation(f"待办表中没有确认单元 {unit_id!r}，无法作废")
+        if self.state_of(unit_id) == TODO_STATE_VOIDED:
+            raise ContractViolation(f"确认单元 {unit_id} 的待办已作废，不重复作废")
+        if is_blank(reason):
+            raise ContractViolation("待办作废必须写明原因（不静默作废）")
+        self.update_progress(
+            unit_id,
+            {
+                TODO_COLUMNS["todo_state"]: TODO_STATE_VOIDED,
+                TODO_COLUMNS["voided_at"]: str(at or ""),
+                TODO_COLUMNS["void_reason"]: str(reason).strip(),
+            },
+        )
+        fields = self.get_fields(unit_id)
+        return {} if fields is None else fields
+
+    def active_rows(self, shift_id: str | None = None) -> tuple[TableRow, ...]:
+        """未作废的待办行（作废行保留留痕，不参与后续流转）。"""
+        return tuple(
+            row
+            for row in self.rows(shift_id)
+            if str(row.get(TODO_COLUMNS["todo_state"]) or "").strip() != TODO_STATE_VOIDED
+        )
+
     def count(self, shift_id: str | None = None) -> int:
         return len(self.rows(shift_id))
+
+
+class SuccessorChangeTable:
+    """接班人变更留痕表（辅助表）：变更（谁/何时/从谁改到谁）落表并可回读。
+
+    权威内容在 ``留痕JSON`` 列（契约 :meth:`contracts.successor.SuccessorChange.to_dict`
+    的原文），关键列另存一份便于人工核对与筛选。
+    """
+
+    def __init__(self, adapter: AitableAdapter) -> None:
+        self.adapter = adapter
+
+    def record(self, change: SuccessorChange) -> str:
+        """新增一条变更留痕；同一变更ID 已存在 → 拒绝（不双写）。"""
+        if self.find_row(change.change_id) is not None:
+            raise ContractViolation(f"接班人变更留痕表已有 {change.change_id}，不重复落表")
+        return self.adapter.create_record(SUCCESSOR_CHANGE_TABLE, _change_fields(change))
+
+    def amend(self, change: SuccessorChange) -> str:
+        """就地更新一条留痕（路由跟随证据回填：作废/重发待办 ID）。"""
+        row = self.find_row(change.change_id)
+        if row is None:
+            raise ContractViolation(f"接班人变更留痕表中没有 {change.change_id}，无法更新")
+        return self.adapter.update_record(
+            SUCCESSOR_CHANGE_TABLE, row.record_id, _change_fields(change)
+        )
+
+    def find_row(self, change_id: str) -> TableRow | None:
+        rows = _rows_by_column(
+            self.adapter.list_records(SUCCESSOR_CHANGE_TABLE),
+            SUCCESSOR_CHANGE_COLUMNS["change_id"],
+            str(change_id),
+        )
+        return rows[0] if rows else None
+
+    def rows(self, shift_id: str | None = None) -> tuple[TableRow, ...]:
+        rows = self.adapter.list_records(SUCCESSOR_CHANGE_TABLE)
+        if shift_id is None:
+            return rows
+        return _rows_by_column(rows, SUCCESSOR_CHANGE_COLUMNS["shift_id"], str(shift_id))
+
+    def entries(self, shift_id: str | None = None) -> tuple[SuccessorChange, ...]:
+        """读回变更留痕（按序号升序）。"""
+        changes = [
+            SuccessorChange.from_dict(
+                json_from_cell(row.get(SUCCESSOR_CHANGE_COLUMNS["payload"]), field="接班人变更留痕")
+            )
+            for row in self.rows(shift_id)
+        ]
+        return tuple(sorted(changes, key=lambda item: item.ordinal))
+
+    def get(self, change_id: str) -> SuccessorChange | None:
+        row = self.find_row(change_id)
+        if row is None:
+            return None
+        return SuccessorChange.from_dict(
+            json_from_cell(row.get(SUCCESSOR_CHANGE_COLUMNS["payload"]), field="接班人变更留痕")
+        )
+
+    def count(self, shift_id: str | None = None) -> int:
+        return len(self.rows(shift_id))
+
+
+def _joined(ids: tuple[str, ...]) -> str:
+    return ", ".join(ids)
+
+
+def _change_fields(change: SuccessorChange) -> dict[str, str]:
+    """变更留痕 → 表格行（原始字符串；权威内容为 JSON 列）。"""
+    return {
+        SUCCESSOR_CHANGE_COLUMNS["change_id"]: change.change_id,
+        SUCCESSOR_CHANGE_COLUMNS["shift_id"]: change.shift_id,
+        SUCCESSOR_CHANGE_COLUMNS["ordinal"]: str(change.ordinal),
+        SUCCESSOR_CHANGE_COLUMNS["from_identity"]: identity_to_cell(change.from_identity),
+        SUCCESSOR_CHANGE_COLUMNS["to_identity"]: identity_to_cell(change.to_identity),
+        SUCCESSOR_CHANGE_COLUMNS["changed_by"]: identity_to_cell(change.changed_by),
+        SUCCESSOR_CHANGE_COLUMNS["changed_at"]: format_minute(change.changed_at),
+        SUCCESSOR_CHANGE_COLUMNS["request_text"]: change.request_text,
+        SUCCESSOR_CHANGE_COLUMNS["resolver"]: change.resolver,
+        SUCCESSOR_CHANGE_COLUMNS["reason"]: change.reason,
+        SUCCESSOR_CHANGE_COLUMNS["voided_todo_ids"]: _joined(change.voided_todo_ids),
+        SUCCESSOR_CHANGE_COLUMNS["issued_todo_ids"]: _joined(change.issued_todo_ids),
+        SUCCESSOR_CHANGE_COLUMNS["payload"]: json_to_cell(change.to_dict()),
+    }
 
 
 def todo_columns_doc() -> dict[str, Any]:
@@ -445,10 +603,13 @@ def todo_columns_doc() -> dict[str, Any]:
     return {
         "todo_table": TODO_TABLE,
         "todo_columns": dict(TODO_COLUMNS),
+        "todo_states": list(TODO_STATES),
         "journal_table": INTAKE_JOURNAL_TABLE,
         "journal_columns": dict(JOURNAL_COLUMNS),
         "alarm_journal_table": ALARM_JOURNAL_TABLE,
         "alarm_journal_columns": dict(ALARM_JOURNAL_COLUMNS),
+        "successor_change_table": SUCCESSOR_CHANGE_TABLE,
+        "successor_change_columns": dict(SUCCESSOR_CHANGE_COLUMNS),
         "note": "辅助表非契约表：只由工作流层使用，用于重启恢复与回写留痕；"
         "是否升格为契约表由主控确认",
     }
@@ -468,7 +629,12 @@ __all__ = [
     "OUTCOME_STORED",
     "OUTCOME_WRITE_UNKNOWN",
     "SHIFT_TABLE",
+    "SUCCESSOR_CHANGE_COLUMNS",
+    "SUCCESSOR_CHANGE_TABLE",
     "TODO_COLUMNS",
+    "TODO_STATES",
+    "TODO_STATE_ACTIVE",
+    "TODO_STATE_VOIDED",
     "TODO_TABLE",
     "AlarmJournal",
     "AlarmJournalEntry",
@@ -476,6 +642,7 @@ __all__ = [
     "IntakeJournal",
     "JournalEntry",
     "ShiftTable",
+    "SuccessorChangeTable",
     "TodoTable",
     "todo_columns_doc",
 ]

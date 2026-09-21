@@ -35,11 +35,11 @@ from contracts.errors import AUTH_REQUIRED, NOT_CONFIRMED, WRITE_UNKNOWN, Contra
 from contracts.identity import IdentityRef, as_identity, require_operator
 from contracts.report import HandoverReport
 from contracts.shift import ShiftRecord
-from contracts.timebase import format_minute, now_shanghai
+from contracts.timebase import format_minute, now_shanghai, truncate_to_minute
 
 from integrations.aitable.adapter import AitableAdapter
 from integrations.aitable.synthetic import assert_synthetic
-from integrations.aitable.tables import TODO_COLUMNS, TodoTable
+from integrations.aitable.tables import TODO_COLUMNS, TODO_STATE_VOIDED, TodoTable
 from integrations.aitable.cells import identity_from_cell, identity_to_cell
 
 #: 回读来源：本层只读 AI 表格（待办表）与待办。
@@ -84,6 +84,7 @@ class TodoAssignmentService:
         self.clock = clock or now_shanghai
         self.board = TodoTable(adapter)
         self._confirmations: dict[str, Confirmation] = {}
+        self._voided: dict[str, Confirmation] = {}
 
     # ---- 计划与待办 -----------------------------------------------------
 
@@ -122,13 +123,25 @@ class TodoAssignmentService:
         for unit in units:
             if not unit.has_todo:
                 raise ContractViolation(f"确认单元 {unit.unit_id} 未创建待办，不得登记回写")
-            if unit.unit_id in self._confirmations:
-                continue
-            record = Confirmation.for_unit(unit)
-            self._confirmations[record.unit_id] = record
-            self._persist(record)
+            self.attach_unit(unit)
         report.confirmation_area = units
         return units
+
+    def attach_unit(self, unit: ConfirmationUnit) -> Confirmation:
+        """登记**单个**确认单元（换人重发的待办走这里；已登记即幂等返回）。"""
+        if not unit.has_todo:
+            raise ContractViolation(f"确认单元 {unit.unit_id} 未创建待办，不得登记回写")
+        known = self._confirmations.get(unit.unit_id)
+        if known is not None:
+            return known
+        if unit.unit_id in self._voided:
+            raise ContractViolation(
+                f"确认单元 {unit.unit_id} 已作废，不得重新登记（换人重发请用新单元号）"
+            )
+        record = Confirmation.for_unit(unit)
+        self._confirmations[record.unit_id] = record
+        self._persist(record)
+        return record
 
     def create_plan(self, report: HandoverReport) -> tuple[ConfirmationUnit, ...]:
         """一步到位：生成待办 + 登记待确认（清单确认区随之带上 todo_id）。"""
@@ -142,6 +155,44 @@ class TodoAssignmentService:
         if record is None:
             raise ContractViolation(f"没有确认单元 {unit_id!r}（先创建待办）")
         return record
+
+    # ---- 作废（换人路由跟随） -------------------------------------------
+
+    def void_unit(
+        self, unit_id: str, *, reason: str, at: datetime | None = None
+    ) -> Confirmation:
+        """**显式作废**一个确认单元的待办（旧待办不得静默残留）。
+
+        - 已回写完成（历史留痕）→ 拒绝作废；
+        - 已作废 → 拒绝重复作废；
+        - 作废后该单元从"活动确认集合"移出（不再计 pending、不再接受确认），
+          但记录本身保留在 :meth:`voided` 里，且待办表行保留（``待办状态=voided``）。
+        """
+        record = self._confirmations.get(unit_id)
+        if record is None:
+            if unit_id in self._voided:
+                raise ContractViolation(f"确认单元 {unit_id} 的待办已作废，不重复作废")
+            raise ContractViolation(f"没有确认单元 {unit_id!r}（先创建待办）")
+        if record.is_written_back:
+            raise ContractViolation(
+                f"确认单元 {unit_id} 已回写完成：历史留痕不得作废，需人工处置"
+            )
+        if is_blank(reason):
+            raise ContractViolation("待办作废必须写明原因（不静默作废）")
+        moment = truncate_to_minute(at or self.clock())
+        record.add_note(f"作废：{str(reason).strip()}")
+        self._persist(record)
+        self.board.void(unit_id, reason=reason, at=format_minute(moment))
+        del self._confirmations[unit_id]
+        self._voided[unit_id] = record
+        return record
+
+    def voided(self) -> tuple[Confirmation, ...]:
+        """已作废的确认单元（留痕可回读）。"""
+        return tuple(self._voided.values())
+
+    def is_voided(self, unit_id: str) -> bool:
+        return unit_id in self._voided
 
     @property
     def confirmations(self) -> tuple[Confirmation, ...]:
@@ -161,7 +212,9 @@ class TodoAssignmentService:
             "confirmed": sum(1 for record in records if record.is_confirmed),
             "written_back": sum(1 for record in records if record.is_written_back),
             "needs_recheck": sum(1 for record in records if record.needs_recheck),
+            "voided": len(self._voided),
             "todos": self.board.count(self.shift.shift_id),
+            "active_todos": len(self.board.active_rows(self.shift.shift_id)),
         }
 
     def board_fields(self, unit_id: str) -> dict[str, str]:
@@ -312,10 +365,19 @@ class TodoAssignmentService:
         return self.board.update_progress(record.unit_id, fields)
 
     def restore(self) -> tuple[Confirmation, ...]:
-        """重启恢复：从待办表重建确认记录（不重发待办、不重放回写）。"""
+        """重启恢复：从待办表重建确认记录（不重发待办、不重放回写）。
+
+        ``待办状态=voided`` 的行恢复为**已作废**（不进活动集合），
+        保证"换人作废"这一留痕重启后不丢、也不悄悄复活成待确认。
+        """
         restored: list[Confirmation] = []
+        self._voided.clear()
         for row in self.board.rows(self.shift.shift_id):
             record = confirmation_from_row(row.fields)
+            state = str(row.get(TODO_COLUMNS["todo_state"]) or "").strip() or "active"
+            if state == TODO_STATE_VOIDED:
+                self._voided[record.unit_id] = record
+                continue
             self._confirmations[record.unit_id] = record
             restored.append(record)
         return tuple(restored)
