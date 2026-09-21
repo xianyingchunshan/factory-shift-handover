@@ -11,6 +11,19 @@
 即为该口径的取值；此时 ``start_time`` / ``end_time`` = **驻场期边界**（可长达数十天），
 E003 越界判定边界 = 驻场期（**对 ``[start, end]`` 整体区间判定，跨零点相连日历日均属期内**，
 不按单日切分，见 :func:`contracts.timebase.is_out_of_window`）。冻结字段与既有语义不变。
+
+判重口径（T07 修订，SPEC §5；**只对 ``stay_period`` 生效，既有四类班次零改动**）：
+一单跨数十天时 ``shift_date`` 落在区间内就有数十个合法取值，判重键
+``(handover_line, shift_date, shift_name)`` 失去唯一性。补两道防线：
+
+- **G1 契约校验**：驻场期单 ``shift_date`` 必须 == ``start_time.date()``（以起始日为业务日期），
+  违反 → :class:`~contracts.errors.ContractViolation`。键因此重新唯一。
+- **G2 区间重叠拒绝**：同交接线、同 ``shift_name`` 的驻场期窗口有交集且非同一 ``shift_id``
+  → 拒绝（:func:`stay_period_conflict` → :func:`duplicate_shift_error`，**复用
+  ``DUPLICATE_SHIFT``，不新增错误码**）；**端点相接不算重叠**。
+
+两层都要挡：内存键层（:meth:`ShiftRegistry.register`）**与**表层
+（:meth:`integrations.aitable.tables.ShiftTable.find` / ``workflow.intake.create_shift``）。
 """
 
 from __future__ import annotations
@@ -54,6 +67,13 @@ ALLOWED_TRANSITIONS: Mapping[str, tuple[str, ...]] = {
 
 #: 需要"告警已清"才允许进入的状态。
 GUARDED_STATUSES = (ShiftStatus.SUBMITTED, ShiftStatus.CONFIRMED, ShiftStatus.ARCHIVED)
+
+#: T07 判重口径说明（文档与测试共用）：驻场期单以起始日为业务日期，同线同驻场期不重复建单。
+STAY_PERIOD_DEDUP_NOTE = (
+    "驻场期单以起始日为业务日期（shift_date == start_time.date()）；"
+    "同交接线同班次名的驻场期窗口有交集（端点相接不算）且非同一 shift_id 时，"
+    "复用 DUPLICATE_SHIFT 拒绝建第二单"
+)
 
 
 @dataclass(frozen=True)
@@ -132,6 +152,17 @@ class ShiftRecord:
             raise ContractViolation("end_time 必须晚于 start_time")
         if not (self.start_time.date() <= self.shift_date <= self.end_time.date()):
             raise ContractViolation("shift_date 必须落在班次区间内（跨零点班次取起始日）")
+        # T07 G1（仅驻场期）：一单跨数十天，区间内每一天都是合法取值 → 判重键不唯一。
+        # 钉死"以起始日为业务日期"后，同期间两次建单必然落到同一个键。
+        if (
+            self.shift_name == ShiftName.STAY_PERIOD.value
+            and self.shift_date != self.start_time.date()
+        ):
+            raise ContractViolation(
+                "驻场期单以起始日为业务日期：shift_date 必须等于 start_time 的日期"
+                f"（shift_date={self.shift_date.isoformat()}，"
+                f"start_time={format_minute(self.start_time)}）"
+            )
         if self.config_snapshot is not None:
             self.config_snapshot = (
                 self.config_snapshot
@@ -164,6 +195,13 @@ class ShiftRecord:
 
     def window(self) -> tuple[datetime, datetime]:
         return (self.start_time, self.end_time)
+
+    def overlaps_window(self, other: "ShiftRecord") -> bool:
+        """两条班次窗口是否**有交集**（闭区间；T07：**端点相接不算重叠**）。
+
+        判定用严格不等号：``a < d and c < b``。相接（``b == c``）时第二个条件为假 → 放行。
+        """
+        return self.start_time < other.end_time and other.start_time < self.end_time
 
     # ---- 驻场期口径（T04 增补，既有语义不变） ---------------------------
 
@@ -272,6 +310,68 @@ class RegisterResult:
         }
 
 
+def stay_period_conflict(
+    incoming: ShiftRecord, candidates: Iterable[ShiftRecord]
+) -> ShiftRecord | None:
+    """在 ``candidates`` 中找出与 ``incoming`` 冲突的驻场期单（T07 G2 口径）。
+
+    冲突条件（全部满足）：
+
+    - 同交接线、同 ``shift_name``，且**双方都是**驻场期（既有四类班次一律不参与）；
+    - 窗口有交集（:meth:`ShiftRecord.overlaps_window`，**端点相接不算**）；
+    - 不是同一个 ``shift_id``（同一单重复提交仍走幂等，不误报）。
+
+    命中返回已存在的那一条（供错误明细指向它），否则 ``None``。
+    """
+    if not incoming.is_stay_period:
+        return None
+    for other in candidates:
+        if other.shift_id == incoming.shift_id:
+            continue
+        if not other.is_stay_period:
+            continue
+        if other.handover_line != incoming.handover_line:
+            continue
+        if not incoming.overlaps_window(other):
+            continue
+        return other
+    return None
+
+
+def duplicate_shift_error(
+    existing: ShiftRecord, incoming: ShiftRecord, *, stay_period: bool = False
+) -> ContractError:
+    """构造 ``DUPLICATE_SHIFT`` 拒绝（T07 **复用冻结错误码，不新增**）。
+
+    ``stay_period=False``（既有四类班次）时文案与明细与本卡之前**逐字节相同**；
+    ``stay_period=True``（驻场期窗口重叠）时在文案里点明窗口与口径。
+    """
+    detail: dict[str, Any] = {
+        "handover_line": incoming.handover_line,
+        "shift_date": incoming.shift_date.isoformat(),
+        "shift_name": str(incoming.shift_name),
+        "existing_shift_id": existing.shift_id,
+        "incoming_shift_id": incoming.shift_id,
+    }
+    if stay_period:
+        existing_window = f"{format_minute(existing.start_time)}~{format_minute(existing.end_time)}"
+        incoming_window = f"{format_minute(incoming.start_time)}~{format_minute(incoming.end_time)}"
+        message = (
+            "同交接线同驻场期不重复建单（窗口重叠："
+            f"{existing_window} 与 {incoming_window}）；"
+            f"已有班次 {existing.shift_id}，不为 {incoming.shift_id} 建第二单"
+        )
+        detail["reason"] = "stay_period_window_overlap"
+        detail["existing_window"] = existing_window
+        detail["incoming_window"] = incoming_window
+    else:
+        message = (
+            f"同班同线已有班次 {existing.shift_id}，不为 {incoming.shift_id} 建第二单"
+        )
+        detail["reason"] = "same_idempotency_key"
+    return ContractError(DUPLICATE_SHIFT, message, detail=detail)
+
+
 class ShiftRegistry:
     """班次登记簿：同班同线只允许一套记录，重复提交不建第二单。"""
 
@@ -283,17 +383,11 @@ class ShiftRegistry:
         key = shift.idempotency_key
         known_key_owner = self._by_key.get(key)
         if known_key_owner is not None and known_key_owner.shift_id != shift.shift_id:
-            raise ContractError(
-                DUPLICATE_SHIFT,
-                f"同班同线已有班次 {known_key_owner.shift_id}，不为 {shift.shift_id} 建第二单",
-                detail={
-                    "handover_line": shift.handover_line,
-                    "shift_date": shift.shift_date.isoformat(),
-                    "shift_name": str(shift.shift_name),
-                    "existing_shift_id": known_key_owner.shift_id,
-                    "incoming_shift_id": shift.shift_id,
-                },
-            )
+            raise duplicate_shift_error(known_key_owner, shift)
+        # T07 G2（内存键层）：驻场期一单跨数十天，键之外还要按窗口重叠挡一次。
+        conflicting = stay_period_conflict(shift, self._by_id.values())
+        if conflicting is not None:
+            raise duplicate_shift_error(conflicting, shift, stay_period=True)
         known_id_owner = self._by_id.get(shift.shift_id)
         if known_id_owner is not None:
             if known_id_owner.idempotency_key != key:
@@ -372,9 +466,12 @@ def new_shift(
 __all__ = [
     "ALLOWED_TRANSITIONS",
     "GUARDED_STATUSES",
+    "STAY_PERIOD_DEDUP_NOTE",
     "ConfigSnapshot",
     "RegisterResult",
     "ShiftRecord",
     "ShiftRegistry",
+    "duplicate_shift_error",
     "new_shift",
+    "stay_period_conflict",
 ]
