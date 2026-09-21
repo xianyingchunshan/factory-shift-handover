@@ -40,6 +40,12 @@ jobs:
   gitleaks:
     name: gitleaks
     timeout-minutes: 10
+    # 仓库转私有后（2026-09-21）gitleaks-action 在 pull_request 事件上需要
+    # pull-requests: read 才能列出 PR 提交；公开仓库可省，私有仓库缺则 403。
+    # 显式声明最小权限（contents 已由顶层给，此处覆盖为同一集合 + PR 读）。
+    permissions:
+      contents: read
+      pull-requests: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
