@@ -10,6 +10,15 @@
 > 变更显式留痕（谁/何时/从谁改到谁）且旧配置快照进 `snapshot_history`。
 > 待办作废状态列属**工作流辅助表**（见 `integrations/aitable/tables.py`），不是契约列。
 
+> T04 **增补**（issue #17，2026-09-21 主控拍板 SPEC §0 厂级定位）：一次轮换交接一次，
+> 一张单覆盖**整个驻场期**（不按昼夜班次切分）。为此在 `enums.py` 的班次名
+> 早/中/晚/自定义 **之后追加** `ShiftName.STAY_PERIOD`（`"stay_period"` / 中文"驻场期"），
+> 既有四个取值的规范值、顺序与标签**不变**；`timebase.py` 增补日历日粒度助手
+> （`calendar_days_in_window` / `covers_calendar_day` / `window_span_days`）。
+> 口径：`start_time`/`end_time` = **驻场期边界**；E003 越界判定边界 = 驻场期——
+> **对 `[start, end]` 整体区间判定，不按单日切分**，跨零点相连日历日均属期内。
+> AI 表格里的班次选项（单选）真实更新属 **L4，由主控执行**；本仓只声明契约取值。
+
 ## 五类契约
 
 | 契约 | 位置 | 关键不变量 |

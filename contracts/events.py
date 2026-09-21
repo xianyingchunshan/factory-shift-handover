@@ -9,6 +9,10 @@
 - **关键级强制升级两条**：``category=major`` 与 ``status=transferred`` 一律
   ``severity=critical``，且**不可降**（原值只作留痕 ``severity_forced``）。
 - 只有 ``completeness=complete`` 的事件才能进入输出清单。
+
+E003 判定边界（T04 增补，SPEC §0 厂级定位）：**班次区间即驻场期边界**——一次轮换
+一张单、覆盖整个驻场期；判定走 :meth:`contracts.shift.ShiftRecord.contains`，对
+``[start, end]`` 整体区间做，跨零点相连日历日**均属期内**，不按单日切分。
 """
 
 from __future__ import annotations

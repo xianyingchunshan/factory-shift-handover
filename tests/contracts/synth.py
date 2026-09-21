@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -38,6 +38,15 @@ START = datetime(2026, 1, 2, 8, 0, tzinfo=SHANGHAI)
 END = datetime(2026, 1, 2, 20, 0, tzinfo=SHANGHAI)
 STAMP = datetime(2026, 1, 2, 20, 0, tzinfo=SHANGHAI)
 
+#: 驻场期（T04 厂级口径）：一次轮换一张单，30 天整、跨月、跨零点相连日。
+STAY_PERIOD_SHIFT_ID = "SYNTH-SHIFT-STAY-0001"
+STAY_PERIOD_FIRST_DAY = date(2026, 3, 2)
+STAY_PERIOD_LAST_DAY = date(2026, 4, 1)
+STAY_PERIOD_START = datetime(2026, 3, 2, 8, 0, tzinfo=SHANGHAI)
+STAY_PERIOD_END = datetime(2026, 4, 1, 8, 0, tzinfo=SHANGHAI)
+STAY_PERIOD_DAYS = 30
+STAY_PERIOD_CALENDAR_DAYS = 31
+
 
 class _Omit:
     """标记"该字段整体缺失"（与显式填 None 区分）。"""
@@ -54,6 +63,16 @@ def at(hour: int, minute: int = 0, day: int = 2) -> datetime:
     return datetime(2026, 1, day, hour, minute, tzinfo=SHANGHAI)
 
 
+def period_at(month: int, day: int, hour: int, minute: int = 0) -> datetime:
+    """驻场期内的合成时刻（Asia/Shanghai）——用于跨月/跨零点边界断言。"""
+    return datetime(2026, month, day, hour, minute, tzinfo=SHANGHAI)
+
+
+def stay_period_day(offset: int) -> date:
+    """驻场期第 ``offset`` 个日历日（0 = 首日）。"""
+    return STAY_PERIOD_FIRST_DAY + timedelta(days=offset)
+
+
 def fixed_clock(moment: datetime = STAMP):
     """固定时钟，供 EventStore 使用。"""
     return lambda: moment
@@ -68,6 +87,23 @@ def make_shift(**overrides: Any) -> ShiftRecord:
         shift_name="early",
         start_time=START,
         end_time=END,
+        handover_from=FROM,
+        handover_to=TO,
+        critical_standard=("重大事项", "移交接班人"),
+    )
+    params.update(overrides)
+    return new_shift(**params)
+
+
+def make_stay_period_shift(**overrides: Any) -> ShiftRecord:
+    """默认一个合规的驻场期班次（30 天：2026-03-02 08:00 ~ 2026-04-01 08:00）。"""
+    params: dict[str, Any] = dict(
+        shift_id=STAY_PERIOD_SHIFT_ID,
+        handover_line=LINE,
+        shift_date=STAY_PERIOD_FIRST_DAY,
+        shift_name="stay_period",
+        start_time=STAY_PERIOD_START,
+        end_time=STAY_PERIOD_END,
         handover_from=FROM,
         handover_to=TO,
         critical_standard=("重大事项", "移交接班人"),
@@ -105,6 +141,21 @@ def make_store(
     return target, book, store
 
 
+def make_stay_period_store() -> tuple[ShiftRecord, AlarmLedger, EventStore]:
+    """驻场期版 :func:`make_store`（30 天边界，时钟固定在末日前）。"""
+    return make_store(
+        shift=make_stay_period_shift(),
+        moment=STAY_PERIOD_END - timedelta(hours=1),
+    )
+
+
+def stay_period_raw_event(event_id: str = "SYNTH-STAY-EVT-0001", **overrides: Any) -> dict[str, Any]:
+    """驻场期事件录入行（默认 ``shift_id`` = 驻场期班次，时间落在驻场期内）。"""
+    overrides.setdefault("shift_id", STAY_PERIOD_SHIFT_ID)
+    overrides.setdefault("occurred_at", "2026-03-20 09:30")
+    return raw_event(event_id, **overrides)
+
+
 def clear_all(ledger: AlarmLedger, moment: datetime | None = None) -> AlarmLedger:
     """清除全部未清告警（仅测试用；真实流程必须先补全/复核再清）。"""
     target = moment or STAMP
@@ -134,6 +185,13 @@ __all__ = [
     "SHIFT_ID",
     "START",
     "STAMP",
+    "STAY_PERIOD_CALENDAR_DAYS",
+    "STAY_PERIOD_DAYS",
+    "STAY_PERIOD_END",
+    "STAY_PERIOD_FIRST_DAY",
+    "STAY_PERIOD_LAST_DAY",
+    "STAY_PERIOD_SHIFT_ID",
+    "STAY_PERIOD_START",
     "STRANGER",
     "TO",
     "at",
@@ -141,6 +199,11 @@ __all__ = [
     "expect_code",
     "fixed_clock",
     "make_shift",
+    "make_stay_period_shift",
+    "make_stay_period_store",
     "make_store",
+    "period_at",
     "raw_event",
+    "stay_period_day",
+    "stay_period_raw_event",
 ]

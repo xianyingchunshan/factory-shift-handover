@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
 
@@ -43,6 +43,16 @@ START = datetime(2026, 1, 2, 8, 0, tzinfo=SHANGHAI)
 END = datetime(2026, 1, 2, 20, 0, tzinfo=SHANGHAI)
 STAMP = datetime(2026, 1, 2, 20, 0, tzinfo=SHANGHAI)
 
+#: 驻场期（T04 厂级口径）：一次轮换一张单，30 天整、跨月、跨零点相连日。
+STAY_PERIOD_SHIFT_ID = "SYNTH-SHIFT-STAY-0001"
+STAY_PERIOD_FIRST_DAY = date(2026, 3, 2)
+STAY_PERIOD_LAST_DAY = date(2026, 4, 1)
+STAY_PERIOD_START = datetime(2026, 3, 2, 8, 0, tzinfo=SHANGHAI)
+STAY_PERIOD_END = datetime(2026, 4, 1, 8, 0, tzinfo=SHANGHAI)
+STAY_PERIOD_STAMP = datetime(2026, 4, 1, 9, 0, tzinfo=SHANGHAI)
+STAY_PERIOD_DAYS = 30
+STAY_PERIOD_CALENDAR_DAYS = 31
+
 
 class _Omit:
     """标记"该字段整体缺失"（与显式填 None 区分）。"""
@@ -56,6 +66,16 @@ OMIT = _Omit()
 
 def at(hour: int, minute: int = 0, day: int = 2) -> datetime:
     return datetime(2026, 1, day, hour, minute, tzinfo=SHANGHAI)
+
+
+def period_at(month: int, day: int, hour: int, minute: int = 0) -> datetime:
+    """驻场期内的合成时刻（Asia/Shanghai）——用于跨月/跨零点边界断言。"""
+    return datetime(2026, month, day, hour, minute, tzinfo=SHANGHAI)
+
+
+def stay_period_day(offset: int) -> date:
+    """驻场期第 ``offset`` 个日历日（0 = 首日）。"""
+    return STAY_PERIOD_FIRST_DAY + timedelta(days=offset)
 
 
 def fixed_clock(moment: datetime = STAMP):
@@ -83,6 +103,23 @@ def make_shift(**overrides: Any) -> ShiftRecord:
     return new_shift(**params)
 
 
+def make_stay_period_shift(**overrides: Any) -> ShiftRecord:
+    """默认一个合规的驻场期班次（30 天：2026-03-02 08:00 ~ 2026-04-01 08:00）。"""
+    params: dict[str, Any] = dict(
+        shift_id=STAY_PERIOD_SHIFT_ID,
+        handover_line=LINE,
+        shift_date=STAY_PERIOD_FIRST_DAY,
+        shift_name="stay_period",
+        start_time=STAY_PERIOD_START,
+        end_time=STAY_PERIOD_END,
+        handover_from=FROM,
+        handover_to=TO,
+        critical_standard=("重大事项", "移交接班人"),
+    )
+    params.update(overrides)
+    return new_shift(**params)
+
+
 def row(event_id: str, **overrides: Any) -> dict[str, Any]:
     """默认一条合规录入行；``OMIT`` 删字段、``None`` 置空。"""
     data: dict[str, Any] = dict(
@@ -98,6 +135,14 @@ def row(event_id: str, **overrides: Any) -> dict[str, Any]:
     )
     data.update(overrides)
     return {key: value for key, value in data.items() if value is not OMIT}
+
+
+def stay_period_row(
+    event_id: str, occurred_at: str = "2026-03-20 09:30", **overrides: Any
+) -> dict[str, Any]:
+    """驻场期事件的录入行（默认归属驻场期班次、时间落在驻场期内）。"""
+    overrides.setdefault("shift_id", STAY_PERIOD_SHIFT_ID)
+    return row(event_id, occurred_at=occurred_at, **overrides)
 
 
 #: 三条合规事项：1 条一般已办、1 条一般进行中、1 条关键级移交（重大事项）。
@@ -180,6 +225,13 @@ def clean_flow(**kwargs: Any) -> Flow:
     return flow
 
 
+def stay_period_flow(**kwargs: Any) -> Flow:
+    """驻场期三段装配（默认班次 = 30 天驻场期，时钟固定在驻场期最后一日）。"""
+    kwargs.setdefault("shift", make_stay_period_shift())
+    kwargs.setdefault("moment", STAY_PERIOD_STAMP)
+    return make_flow(**kwargs)
+
+
 def alarm_flow(**kwargs: Any) -> Flow:
     """录制四种告警各一条（含 E001 拒收），用于闸门与恢复测试。"""
     flow = make_flow(**kwargs)
@@ -225,6 +277,14 @@ __all__ = [
     "SHIFT_ID",
     "START",
     "STAMP",
+    "STAY_PERIOD_CALENDAR_DAYS",
+    "STAY_PERIOD_DAYS",
+    "STAY_PERIOD_END",
+    "STAY_PERIOD_FIRST_DAY",
+    "STAY_PERIOD_LAST_DAY",
+    "STAY_PERIOD_SHIFT_ID",
+    "STAY_PERIOD_STAMP",
+    "STAY_PERIOD_START",
     "STRANGER",
     "TO",
     "Flow",
@@ -236,7 +296,12 @@ __all__ = [
     "make_adapter",
     "make_flow",
     "make_shift",
+    "make_stay_period_shift",
+    "period_at",
     "repair_all",
     "report_of",
     "row",
+    "stay_period_day",
+    "stay_period_flow",
+    "stay_period_row",
 ]
