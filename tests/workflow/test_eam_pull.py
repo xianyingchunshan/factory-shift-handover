@@ -30,12 +30,13 @@ from contracts.enums import Completeness, EventCategory, EventStatus, Severity  
 from contracts.errors import ALARM_NOT_CLEARED, E001, E002, E003, E004  # noqa: E402
 
 from integrations.aitable.cells import EVENT_COLUMNS  # noqa: E402
-from integrations.aitable.synthetic import CREATE, UPDATE  # noqa: E402
+from integrations.aitable.synthetic import CREATE, FAIL_UNKNOWN, UPDATE  # noqa: E402
 from integrations.aitable.tables import EVENT_TABLE  # noqa: E402
 from integrations.eam.adapter import EamReadOnlyAdapter, defect, hazard  # noqa: E402
 from integrations.eam.mapping import REJECT_BAD_TIME, REJECT_MISSING_REF  # noqa: E402
 from workflow.eam_pull import (  # noqa: E402
     ACTION_CREATED,
+    ACTION_PENDING,
     ACTION_REJECTED,
     ACTION_SKIPPED,
     ACTION_UNMAPPED,
@@ -470,6 +471,24 @@ class TestEntryGuards(unittest.TestCase):
         flow.run()
         self.assertEqual(flow.table_writes(UPDATE), 0)
         self.assertGreater(flow.table_writes(CREATE), 0)
+
+    def test_write_unknown_is_reported_and_only_reconciled(self):
+        """落表受理不明（write_unknown）：只回查、不重放，且显式报出。"""
+        flow = synth.eam_flow(
+            eam=synth.make_eam_adapter(defect_records=(synth.eam_defects()[0],), hazard_records=())
+        )
+        flow.adapter.queue_failure(CREATE, FAIL_UNKNOWN)
+        report = flow.run()
+        self.assertEqual(report.created, 0)
+        self.assertEqual(report.pending, 1)
+        self.assertEqual([entry.action for entry in report.entries], [ACTION_PENDING])
+        self.assertIn("write_unknown", report.entries[0].reason)
+        event_id = flow.event_id_of(synth.EAM_D1)
+        self.assertEqual(flow.pull.pending_events(), (event_id,))
+        self.assertEqual(flow.intake.event_table.count(), 0)
+        # 唯一出路是回查：未生效 → not_applied；不自动补写
+        self.assertEqual(flow.pull.reconcile_pending(), {event_id: "not_applied"})
+        self.assertEqual(flow.intake.event_table.count(), 0)
 
     def test_eam_reads_are_traceable(self):
         flow = synth.eam_flow()
